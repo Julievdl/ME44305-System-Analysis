@@ -9,42 +9,47 @@ import pandas as pd
 from simulation_classes import AGV, Crane, ChargingStation, VesselGenerator
 
 #Standard/example dict of inputs. Can be modified for sensitivity analysis and experimentation with different scenarios.
+TravelDistanceQuayToYard = 500
+ChargerLocation = 0.5
+
 INPUT_PARAMETERS = dict(
-    TravelTimeToQuayside  =  166/2,   # fixed travel time, empty AGV (seconds)
-    TravelTimeToYard      = 166,    # fixed travel time, loaded AGV (seconds)
-    TravelTimeToCharger   =  166/2,   # fixed travel time, AGV to charger (seconds)
-
-    PickupDuration        = 0.5*60,   # time to pick up one container (seconds)
-    DropoffDuration       = 0.5*60,    # time to drop off one container (seconds)
-    CraneCycleTime        =  1.5*60,   # time to unload one container (seconds)
-
-    EnergyLoaded          = 2.5,    # kWh consumed per loaded trip
-    EnergyEmpty           = 1.4,   # kWh consumed per empty trip
-    BatteryCapacity       =  200,   # usable battery capacity (kWh)
-
-    ChargeRate            =  50,   # charge rate (kW)
-
-    SoCThreshold          =  0.7,   # dispatch threshold for charging request
-    SubstationCapacity    =  100,   # grid ceiling (kW) - sensitivity parameter
-
-    CurrentGridLoad       = 0,   # tracked globally, updated at charge events
-    TotalCO2              = 0,   # accumulator for primary KPI
-
-    NrChargingStations    = 2,   # number of charging stations
-    NrCranes              = 2,   # number of quay cranes
+    AGVSpeed                         = 4.5,  # m/s
     
-    FleetSize             = 5,   # number of AGVs in fleet
-    WarmUpPeriod          = 24 * 3600,  # seconds
-    ObservationPeriod     = 28 * 24 *3600,  # seconds
-    
-    ContainersPerVessel   = 294,  # fixed container count per vessel arrival
-    
-    CheckInterval         = 50, # time between grid ceiling checks when AGV is waiting to charge (seconds)
+    ChargerLocation                  = 0.5,              # relative location of charger between yard and quay (0-1)
+    TravelDistanceQuayToYard         = TravelDistanceQuayToYard,              # fixed travel time, empty AGV (seconds)
+    TravelDistanceYardToCharger      = TravelDistanceQuayToYard * ChargerLocation,        #TravelDistanceQuayToYard*ChargerLocation,         # fixed travel time, AGV to charger (seconds)
+    TravelDistanceChargerToQuay      = TravelDistanceQuayToYard * (1 - ChargerLocation),  #TravelDistanceQuayToYard*(1 - ChargerLocation),   # fixed travel time, AGV to quay (seconds)
 
-    VesselInterArrivalMean = 100,  # mean inter-arrival time for vessels (seconds)
+    PickupDuration                   = 30,   # time to pick up one container (seconds)
+    DropoffDuration                  = 30,   # time to drop off one container (seconds)
+    
+    CraneCycleTimeMin                = 90,      # time to unload one container (seconds)
+    CraneCycleTimeMax                = 144,     # time to unload one container (seconds)
 
-    SoCInit = 1.0,   # initial state of charge for all AGVs
-    StateInit = "IDLE"   # initial state for all AGVs
+    EnergyLoaded                     = 2.5,      # kWh consumed per loaded trip
+    EnergyEmpty                      = 1.4,      # kWh consumed per empty trip
+    BatteryCapacity                  = 200,     # usable battery capacity (kWh)
+
+    ChargeRate                       = 300,      # charge rate (kW)
+
+    SoCThreshold                     = 0.7,     # dispatch threshold for charging request
+    SubstationCapacity               = 400,     # grid ceiling (kW) - sensitivity parameter
+
+    NrChargingStations               = 2,        # number of charging stations
+    NrCranes                         = 2,        # number of quay cranes
+    
+    FleetSize                        = 5,                # number of AGVs in fleet
+    WarmUpPeriod                     = 24 * 3600,        # seconds
+    ObservationPeriod                = 28 * 24 *3600,    # seconds
+    
+    ContainersPerVessel              = 294,      # fixed container count per vessel arrival
+    
+    CheckInterval                    = 50,       # time between grid ceiling checks when AGV is waiting to charge (seconds)
+
+    VesselInterArrivalMean           = 12096,    # mean inter-arrival time for vessels (seconds)
+
+    SoCInit                          = 1.0,      # initial state of charge for all AGVs
+    StateInit                        = "IDLE"    # initial state for all AGVs
        
 )
 
@@ -54,24 +59,27 @@ CARBON_INTENSITY = pd.read_csv("carbon_intensity_seasonal.csv", parse_dates=['ho
 #Main simulation run function. Use in a loop for sensitivity and design of experiments.
 def run_simulation(input_parameters=INPUT_PARAMETERS, 
                    carbon_intensity=CARBON_INTENSITY,
-                   RunTime=7*24): 
+                   seed=42): 
 
     """
     Main simulation function. Initializes environment, creates components, and runs the simulation.
     Inputs:
         input_parameters: dict of all model parameters (travel times, energy use, fleet size, etc.)
         carbon_intensity: DataFrame with hourly carbon intensity values for the year
-        RunTime: simulation run time in hours (default 7 days)
+        seed: random seed for reproducibility
     """
     
     #Initialize parameters from input dictionary
-    TravelTimeToQuayside  =  input_parameters["TravelTimeToQuayside"]
-    TravelTimeToYard      =  input_parameters["TravelTimeToYard"]
-    TravelTimeToCharger   =  input_parameters["TravelTimeToCharger"]
+    AGVSpeed              = input_parameters["AGVSpeed"]
+    
+    TravelDistanceQuayToYard         =  input_parameters["TravelDistanceQuayToYard"]
+    TravelDistanceYardToCharger      =  input_parameters["TravelDistanceYardToCharger"]
+    TravelDistanceChargerToQuay      =  input_parameters["TravelDistanceChargerToQuay"]
     
     PickupDuration        =  input_parameters["PickupDuration"]
     DropoffDuration       =  input_parameters["DropoffDuration"]
-    CraneCycleTime        =  input_parameters["CraneCycleTime"]
+    CraneCycleTimeMin        =  input_parameters["CraneCycleTimeMin"]
+    CraneCycleTimeMax        =  input_parameters["CraneCycleTimeMax"]
     
     EnergyLoaded          =  input_parameters["EnergyLoaded"]
     EnergyEmpty           =  input_parameters["EnergyEmpty"]
@@ -80,8 +88,6 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     SoCThreshold          =  input_parameters["SoCThreshold"]
     
     SubstationCapacity    =  input_parameters["SubstationCapacity"]
-    CurrentGridLoad       =  input_parameters["CurrentGridLoad"]   
-    TotalCO2              =  input_parameters["TotalCO2"]   
     
     NrChargingStations    =  input_parameters["NrChargingStations"]  
     NrCranes              =  input_parameters["NrCranes"]   
@@ -98,17 +104,19 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
 
     SoCInit = input_parameters["SoCInit"]   
     StateInit = input_parameters["StateInit"]  
+
     
     #Create counter for KPI and state tracking (list type for mutability)
     counters = {
         "TotalCO2": 0,
         "CompletedContainers": 0,
         "CompletedVessels": 0,
-        "CurrentGridLoad": 0
+        "CurrentGridLoad": 0,
+        "ArrivedVessels": 0
     }
 
     #Initialize environment
-    env = sim.Environment(trace=False)
+    env = sim.Environment(trace=False, random_seed=seed)
 
     #Create and store components for easier access
     AGVList = []
@@ -138,7 +146,8 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     for j in range(NrCranes):
         crane = Crane(MyVesselQueue=MyVesselQueue,
                 MyJobQueueGlobal=MyJobQueueGlobal,
-                CraneCycleTime=CraneCycleTime,
+                CraneCycleTimeMin=CraneCycleTimeMin,
+                CraneCycleTimeMax=CraneCycleTimeMax,
                 AGVList=AGVList,
                 SoCThreshold=SoCThreshold,
                 counters=counters)
@@ -148,9 +157,10 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     for k in range(FleetSize):
         agv = AGV(AGV_ID=k, 
                 SoC=SoCInit,
-                TravelTimeToQuayside=TravelTimeToQuayside,
-                TravelTimeToYard=TravelTimeToYard,
-                TravelTimeToCharger=TravelTimeToCharger,
+                AGVSpeed=AGVSpeed,
+                TravelDistanceQuayToYard=TravelDistanceQuayToYard,
+                TravelDistanceYardToCharger=TravelDistanceYardToCharger,
+                TravelDistanceChargerToQuay=TravelDistanceChargerToQuay,
                 PickupDuration=PickupDuration,
                 DropoffDuration=DropoffDuration,
                 EnergyEmpty=EnergyEmpty,
@@ -168,28 +178,33 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
 
     VesselGenerator(VesselInterArrivalMean=VesselInterArrivalMean,
                     ContainersPerVessel=ContainersPerVessel,
-                    MyVesselQueue=MyVesselQueue)
+                    MyVesselQueue=MyVesselQueue,
+                    counters=counters)
 
 
 
-    # Wait WarmUpPeriod -- not implemented yet
-    # ResetKPICounters -- not implemented yet
+    # Wait WarmUpPeriod 
+    env.run(till= WarmUpPeriod)
+    
+    # ResetKPICounters 
+    for key in counters:
+        counters[key] = 0
 
     # Wait ObservationPeriod -- not implemented yet
+    env.run(till= ObservationPeriod)
+
     # RecordResults -- not implemented yet
-
-    #Run simulation until specified time limit
-    
-    env.run(till= RunTime * 3600)
-
     MyJobQueueGlobal.print_statistics()
     MyVesselQueue.print_statistics()
     MyChargingQueue.print_statistics()
     
+    print(counters)
     print("Total CO2 emissions: ", counters["TotalCO2"]) 
     print("Completed containers: ", counters["CompletedContainers"])
     print("Completed vessels: ", counters["CompletedVessels"])
     print("CarbonIntensity: ", carbon_intensity['carbon_intensity'])
-
-run_simulation()
+    print("ArrivedVessels", counters['ArrivedVessels'])
+    
+for i in range(3):
+    run_simulation(seed=i)
 

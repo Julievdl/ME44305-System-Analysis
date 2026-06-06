@@ -12,17 +12,21 @@ class VesselGenerator(sim.Component):
                 self, 
                 VesselInterArrivalMean=None,
                 ContainersPerVessel=None,
-                MyVesselQueue=None):
+                MyVesselQueue=None,
+                counters=None):
         
         self.InterArrivalTime       =  sim.Exponential(VesselInterArrivalMean)
         self.ContainersPerVessel    =  ContainersPerVessel
         self.MyVesselQueue          =  MyVesselQueue
+        self.counters               =  counters
         
     def process(self):
         while True:
             self.hold(self.InterArrivalTime.sample())
             newVessel = Vessel()
             newVessel.ArrivalTime = self.env.now()
+            #print("Vessel arrived at time ", newVessel.ArrivalTime)
+            self.counters['ArrivedVessels'] += 1
             newVessel.ContainerCount = self.ContainersPerVessel
             newVessel.enter(self.MyVesselQueue)
 
@@ -41,14 +45,15 @@ class Crane(sim.Component):
     def setup(self, 
                 MyVesselQueue=None,
                 MyJobQueueGlobal=None,
-                CraneCycleTime=None,
+                CraneCycleTimeMin=None,
+                CraneCycleTimeMax=None,
                 AGVList=None,
                 SoCThreshold=None,
                 counters=None):
         
         self.MyVesselQueue       =  MyVesselQueue
         self.MyJobQueueGlobal    =  MyJobQueueGlobal
-        self.CraneCycleTime      =  CraneCycleTime
+        self.CraneCycleTime      =  sim.Uniform(CraneCycleTimeMin, CraneCycleTimeMax)
         self.AGVList             =  AGVList
         self.SoCThreshold        =  SoCThreshold
         self.counters            =  counters
@@ -59,9 +64,9 @@ class Crane(sim.Component):
                 self.standby()
             
             self.CurrentVessel = self.MyVesselQueue.pop()
-                
+            #print("Crane starts unloading vessel with ", self.CurrentVessel.ContainerCount, " containers at time ", self.env.now())  
             for container in range(self.CurrentVessel.ContainerCount):
-                self.hold(self.CraneCycleTime)
+                self.hold(self.CraneCycleTime.sample())
                 newContainer = Container()
                 newContainer.ArrivalTime = self.env.now()
                 newContainer.enter(self.MyJobQueueGlobal)
@@ -70,6 +75,7 @@ class Crane(sim.Component):
                           SoCThreshold=self.SoCThreshold,
                           MyJobQueueGlobal=self.MyJobQueueGlobal)
             
+            #print("Crane finished unloading vessel at time ", self.env.now())
             self.counters["CompletedVessels"] += 1 #Small added vessels counter for oversight
 
 # TContainer -- Temporary. Flow entity.
@@ -88,9 +94,10 @@ class AGV(sim.Component):
     def setup(self, 
               AGV_ID=None, 
               SoC=None,
-              TravelTimeToQuayside=None,
-              TravelTimeToYard=None,
-              TravelTimeToCharger=None,
+              AGVSpeed=None,
+              TravelDistanceQuayToYard=None,
+              TravelDistanceYardToCharger=None,
+              TravelDistanceChargerToQuay=None,
               PickupDuration=None,
               DropoffDuration=None,
               EnergyEmpty=None,
@@ -107,10 +114,12 @@ class AGV(sim.Component):
         self.SoC                   =  SoC
         self.State                 =  sim.State(f"AGV_{AGV_ID}_state", "IDLE")
         self.State.set("IDLE")
+        self.AGVSpeed              =  AGVSpeed
         
-        self.TravelTimeToQuayside  =  TravelTimeToQuayside
-        self.TravelTimeToYard      =  TravelTimeToYard
-        self.TravelTimeToCharger   =  TravelTimeToCharger
+        self.TravelTimeQuayToYard         =  TravelDistanceQuayToYard / self.AGVSpeed
+        self.TravelTimeYardToCharger      =  TravelDistanceYardToCharger / self.AGVSpeed
+        self.TravelTimeChargerToQuay      =  TravelDistanceChargerToQuay / self.AGVSpeed
+
         self.PickupDuration        =  PickupDuration
         self.DropoffDuration       =  DropoffDuration
         self.EnergyEmpty           =  EnergyEmpty
@@ -130,14 +139,14 @@ class AGV(sim.Component):
             
             self.State.set("ACTIVE")
             
-            self.hold(self.TravelTimeToQuayside)
+            self.hold(self.TravelTimeChargerToQuay)
             self.SoC = self.SoC - self.EnergyEmpty / self.BatteryCapacity
             
             self.hold(self.PickupDuration)
             
             self.CurrentContainer.AssignedAGV = self.AGV_ID 
             
-            self.hold(self.TravelTimeToYard)
+            self.hold(self.TravelTimeQuayToYard)
             self.SoC = self.SoC - self.EnergyLoaded / self.BatteryCapacity
             
             self.hold(self.DropoffDuration)
@@ -145,9 +154,11 @@ class AGV(sim.Component):
             
             RecordDelivery(counters=self.counters)
             
+            #Travel to charger/depot location
+            self.hold(self.TravelTimeYardToCharger)
+            
             if self.SoC <= self.SoCThreshold:
                 self.State.set("TO_CHARGER")
-                self.hold(self.TravelTimeToCharger)
                 self.enter(self.MyChargingQueue)
                 
                 #Explicit activation of first available charging station bc standby apparently doesnt work in salabim??????
@@ -206,12 +217,13 @@ class ChargingStation(sim.Component):
                 
                 idx = floor(self.env.now() / 3600) % len(self.CarbonIntensity) #Loops around if sim runs longer than CarbonIntensity data length
                 gamma = self.CarbonIntensity['carbon_intensity'][idx] 
-                
+                #print("gamma: ", gamma)
                 EnergyNeeded = (1.0 - myAGV.SoC) * self.BatteryCapacity
                 self.counters["CurrentGridLoad"] += self.ChargeRate #Unless we use external grid load data, current grid will never be exceeded unless we have too many chargers
                 
                 self.hold((EnergyNeeded / self.ChargeRate) * 3600)
 
+                #print(self.counters['TotalCO2'], " ", EnergyNeeded, " ", gamma)
                 self.counters["TotalCO2"] += EnergyNeeded * gamma
                 
                 myAGV.SoC = 1.0
@@ -225,7 +237,7 @@ class ChargingStation(sim.Component):
                           SoCThreshold=self.SoCThreshold,
                           MyJobQueueGlobal=self.MyJobQueueGlobal)
             else:
-                self.hold(CheckInterval)
+                self.hold(self.CheckInterval)
 
 
 # Instantaneous methods (no simulated time consumed)
@@ -235,23 +247,22 @@ def AssignAGV(SoCThreshold=None,
               AGVList=None):
     
     AGVAvailable = []
-    # print("AGVlist", AGVList)
-    # print(AGVList[0].State.get())
-    # print(AGVList[0].SoC)
-    
+    SoCs = []
+
     for AGV in AGVList:
         if AGV.State.get() == "IDLE" and AGV.SoC > SoCThreshold:
             AGVAvailable.append(AGV)
     
     AGVAvailable.sort(key=lambda x: x.SoC)
+
+    
+    
     
     if len(MyJobQueueGlobal) > 0 and len(AGVAvailable) > 0:
         myContainer = MyJobQueueGlobal.pop()
         myAGV = AGVAvailable.pop()
-        #print(myAGV, myContainer)
         
         myAGV.CurrentContainer = myContainer
-        #myAGV.State.set("ACTIVE")
         myAGV.activate()
 
 
