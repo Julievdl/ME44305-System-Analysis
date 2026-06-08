@@ -4,11 +4,11 @@ import random
 import numpy as np
 import pandas as pd
 
-#Import the main classes from the simulation_classes file
+#Import the main classes from the simulation_classes.py file
 #To keep this file more organized
 from simulation_classes import AGV, Crane, ChargingStation, VesselGenerator
 
-#Standard/example dict of inputs. Can be modified for sensitivity analysis and experimentation with different scenarios.
+#Standard/example dict of inputs. Can be modified in a loop for sensitivity analysis and experimentation with different scenarios.
 TravelDistanceQuayToYard = 500
 ChargerLocation = 0.5
 
@@ -106,7 +106,7 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     StateInit = input_parameters["StateInit"]  
 
     
-    #Create counter for KPI and state tracking (list type for mutability)
+    #Create counter for KPI and state tracking (dict type for mutability)
     counters = {
         "TotalCO2": 0,
         "CompletedContainers": 0,
@@ -194,17 +194,33 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     env.run(till= ObservationPeriod)
 
     # RecordResults -- not implemented yet
+    
+    #Print statistics and KPIs
     MyJobQueueGlobal.print_statistics()
     MyVesselQueue.print_statistics()
     MyChargingQueue.print_statistics()
     
+    
     print(counters)
     print("Total CO2 emissions: ", counters["TotalCO2"]) 
     print("Completed containers: ", counters["CompletedContainers"])
-    print("Completed vessels: ", counters["CompletedVessels"])
+    print("Completed unloading of vessels: ", counters["CompletedVessels"])
     print("CarbonIntensity: ", carbon_intensity['carbon_intensity'])
     print("ArrivedVessels", counters['ArrivedVessels'])
     
+    return counters
+    
+run_simulation() #Run the simulation with default parameters   
+ 
 for i in range(3):
+    # Use for loop to adjust parameters such as seed or 
+    # input parameters for sensitivity analysis and design of experiments.
     run_simulation(seed=i)
+    
+for i in range(3):
+    # Use for loop to adjust parameters such as seed or 
+    # input parameters for sensitivity analysis and design of experiments.
+    TEST_INPUT = INPUT_PARAMETERS.copy()
+    TEST_INPUT["FleetSize"] = i
+    run_simulation(seed=i, input_parameters=TEST_INPUT)
 
