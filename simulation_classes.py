@@ -3,10 +3,12 @@ from math import floor
 import random
 import numpy as np
 import pandas as pd
+import datetime as dt
 
 # TVesselGenerator -- Permanent. Generates vessel arrivals.
 class VesselGenerator(sim.Component):
     InterArrivalTime: sim.Exponential
+    Vessel_ID: int
 
     #Setup of the class, parameters are passed from the main function when component is created.
     def setup(
@@ -23,7 +25,6 @@ class VesselGenerator(sim.Component):
     
     #Body of the process, behaviour is defined in here.    
     def process(self):
-        
         #while loop (infinite loop) to continuously generate vessels.
         while True:
             
@@ -31,9 +32,9 @@ class VesselGenerator(sim.Component):
             self.hold(self.InterArrivalTime.sample())
             
             #Create new vessel and assign arrival time and container count
-            newVessel = Vessel()
-            newVessel.ArrivalTime = self.env.now()
-            newVessel.ContainerCount = self.ContainersPerVessel
+            newVessel = Vessel(ContainerCount=self.ContainersPerVessel, 
+                               ArrivalTime=self.env.now(), 
+                               VesselID=self.counters["ArrivedVessels"])
             
             #Add vessel to global vessel queue
             newVessel.enter(self.MyVesselQueue)
@@ -46,6 +47,13 @@ class VesselGenerator(sim.Component):
 class Vessel(sim.Component):
     ContainerCount: int
     ArrivalTime:    float
+    VesselID:       int
+    
+    #Setup of the class, parameters are passed from the main function when component is created.
+    def setup(self, ContainerCount=None, ArrivalTime=None, VesselID=None):
+        self.ContainerCount = ContainerCount
+        self.ArrivalTime = ArrivalTime
+        self.Vessel_ID = VesselID
 
 
 # TCrane -- Permanent. Reactivated by TVesselGenerator.
@@ -85,9 +93,13 @@ class Crane(sim.Component):
             for container in range(self.CurrentVessel.ContainerCount):
                 self.hold(self.CraneCycleTime.sample())
                 
-                newContainer = Container()
-                newContainer.ArrivalTime = self.env.now()
+                newContainer = Container(ContainerID=self.counters["UnloadedContainers"], 
+                                         VesselID=self.CurrentVessel.Vessel_ID, 
+                                         ArrivalTime=self.env.now())
+                
                 newContainer.enter(self.MyJobQueueGlobal)
+                
+                self.counters["UnloadedContainers"] += 1
                 
                 AssignAGV(AGVList=self.AGVList, 
                           SoCThreshold=self.SoCThreshold,
@@ -98,9 +110,24 @@ class Crane(sim.Component):
 
 # TContainer -- Temporary. Flow entity.
 class Container(sim.Component):
-    ArrivalTime:  float
-    DepartTime:   float
+    ContainerID:  int
+    VesselID:     int
+    ArrivalTime:  float #Time when container is unloaded from vessel at quay
+    PickupTime:   float #Time when container is picked up by AGV at quay
+    DepartTime:   float #Time when container is dropped off at yard
     AssignedAGV:  int #Chose to make it the AGV ID, but if extra insight is needed then should be AGV component reference instead
+    
+
+    #Setup of the class, parameters are passed from the main function when component is created.
+    def setup(self, ContainerID=None, VesselID=None, ArrivalTime=None):
+        self.ContainerID  = ContainerID
+        self.VesselID     = VesselID
+        self.ArrivalTime  = ArrivalTime
+        self.PickupTime   = None
+        self.DepartTime   = None
+        self.AssignedAGV  = None
+        
+
 
 # TAGV -- Permanent. Cycles between transport jobs and charging.
 class AGV(sim.Component):
@@ -127,7 +154,9 @@ class AGV(sim.Component):
               MyJobQueueGlobal=None,
               AGVList=None,
               SoCThreshold=None,
-              counters=None):
+              counters=None,
+              delivery_records=None,
+              charging_records=None):
         
         self.AGV_ID                =  AGV_ID
         self.SoC                   =  SoC
@@ -151,7 +180,9 @@ class AGV(sim.Component):
         self.AGVList               =  AGVList
         self.SoCThreshold          =  SoCThreshold
         self.counters              =  counters
-    
+        self.delivery_records      =  delivery_records
+        self.charging_records      =  charging_records
+        
     #Body of the process, behaviour is defined in here.    
     def process(self):
         #while loop (infinite loop) to continuously check for jobs, perform transport and charge when needed.
@@ -167,8 +198,9 @@ class AGV(sim.Component):
             self.SoC = self.SoC - self.EnergyEmpty / self.BatteryCapacity
             self.hold(self.PickupDuration)
             
-            #Set AGV ID in container for statistics and tracking
+            #Set AGV ID and pickup time in container for statistics and tracking
             self.CurrentContainer.AssignedAGV = self.AGV_ID 
+            self.CurrentContainer.PickupTime = self.env.now()
             
             #Hold for travel from quay to yard, update SoC and hold for dropoff duration
             self.hold(self.TravelTimeQuayToYard)
@@ -177,7 +209,7 @@ class AGV(sim.Component):
             
             #Set container departure time for statistics and record delivery in counter
             self.CurrentContainer.DepartTime = self.env.now()
-            RecordDelivery(counters=self.counters)
+            RecordDelivery(counters=self.counters, container=self.CurrentContainer, delivery_records=self.delivery_records)
             
             #Travel to charger/depot location
             self.hold(self.TravelTimeYardToCharger)
@@ -187,6 +219,15 @@ class AGV(sim.Component):
                 #Change state and enter charging queue
                 self.State.set("TO_CHARGER")
                 self.enter(self.MyChargingQueue)
+                
+                self.charging_records.append({"CurrentTime": self.env.now(), 
+                                              "AGVID": self.AGV_ID, 
+                                              "AGVSoC": self.SoC,
+                                              "Action": "EnterQueue",
+                                              "StartTime": self.env.now(), 
+                                              "EnergyAdded": None, 
+                                              "CurrentGridLoad": self.counters["CurrentGridLoad"], 
+                                              "CurrentCO2": self.counters["TotalCO2"]})
                 
                 #Explicit activation of first available charging station (standby didnt work for some reason :/ )
                 for cs in self.ChargingStationsList:
@@ -221,7 +262,8 @@ class ChargingStation(sim.Component):
               MyJobQueueGlobal=None,
               SoCThreshold=None,
               CarbonIntensity=None,
-              counters=None):
+              counters=None,
+              charging_records=None):
         
         self.ChargeRate           =  ChargeRate
         self.MyChargingQueue      =  MyChargingQueue
@@ -233,6 +275,7 @@ class ChargingStation(sim.Component):
         self.SoCThreshold         =  SoCThreshold
         self.CarbonIntensity      =  CarbonIntensity
         self.counters             =  counters
+        self.charging_records     =  charging_records
         
     def process(self):
         while True:
@@ -260,13 +303,33 @@ class ChargingStation(sim.Component):
                 (but that would make them obsolete)
                 """
                 #Update grid load counter and hold for charging duration based on energy needed and charge rate
-                self.counters["CurrentGridLoad"] += self.ChargeRate 
+                self.counters["CurrentGridLoad"] += self.ChargeRate
+                
+
+                self.charging_records.append({"CurrentTime": self.env.now(), 
+                                              "AGVID": myAGV.AGV_ID, 
+                                              "AGVSoC": myAGV.SoC,
+                                              "Action": "StartCharging",
+                                              "StartTime": self.env.now(), 
+                                              "EnergyAdded": None, 
+                                              "CurrentGridLoad": self.counters["CurrentGridLoad"], 
+                                              "CurrentCO2": self.counters["TotalCO2"]})
+                 
                 self.hold((EnergyNeeded / self.ChargeRate) * 3600)
 
                 # Update total CO2 emissions based on energy needed and carbon intensity at the time of charging 
                 # and update grid load counter
                 self.counters["TotalCO2"] += EnergyNeeded * gamma
                 self.counters["CurrentGridLoad"] -= self.ChargeRate
+                
+                self.charging_records.append({"CurrentTime": self.env.now(), 
+                                              "AGVID": myAGV.AGV_ID, 
+                                              "AGVSoC": myAGV.SoC,
+                                              "Action": "EndCharging",
+                                              "StartTime": self.env.now(), 
+                                              "EnergyAdded": EnergyNeeded, 
+                                              "CurrentGridLoad": self.counters["CurrentGridLoad"], 
+                                              "CurrentCO2": self.counters["TotalCO2"]})
                 
                 #After charging is done, set AGV SoC to 100% and activate it to check for new job assignment
                 myAGV.SoC = 1.0
@@ -305,7 +368,15 @@ def AssignAGV(SoCThreshold=None,
         myAGV.activate()
 
 
-def RecordDelivery(counters=None):
+def RecordDelivery(counters=None, container=None, delivery_records=None):
     counters["CompletedContainers"] += 1
-    # update throughput statistics -- not quite implemented yet (somewhat contained in the counters dict)
-  
+    
+    delivery_records.append({
+        "CurrentTime": container.env.now(),
+        "ContainerID": container.ContainerID,
+        "VesselID": container.VesselID,
+        "ArrivalTime": container.ArrivalTime,
+        "PickupTime": container.PickupTime,
+        "DepartTime": container.DepartTime,
+        "AGVID": container.AssignedAGV,  # AGV ID will be set when the container is assigned to an AGV
+        "CurrentCO2": counters["TotalCO2"]})
