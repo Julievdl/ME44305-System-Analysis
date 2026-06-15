@@ -154,9 +154,11 @@ class AGV(sim.Component):
               MyJobQueueGlobal=None,
               AGVList=None,
               SoCThreshold=None,
+              OpportunityThreshold=None,
               counters=None,
               delivery_records=None,
-              charging_records=None):
+              charging_records=None,
+              Scenario=None):
         
         self.AGV_ID                =  AGV_ID
         self.SoC                   =  SoC
@@ -179,9 +181,11 @@ class AGV(sim.Component):
         self.MyJobQueueGlobal      =  MyJobQueueGlobal
         self.AGVList               =  AGVList
         self.SoCThreshold          =  SoCThreshold
+        self.OpportunityThreshold  =  OpportunityThreshold
         self.counters              =  counters
         self.delivery_records      =  delivery_records
         self.charging_records      =  charging_records
+        self.Scenario              =  Scenario
         
     #Body of the process, behaviour is defined in here.    
     def process(self):
@@ -237,6 +241,31 @@ class AGV(sim.Component):
                 
                 #passivate and wait to be activated by charging station after charging is done
                 self.passivate()
+
+            elif self.Scenario in [1, 2] and len(self.MyJobQueueGlobal) == 0 and self.SoC < self.OpportunityThreshold:
+                #If no jobs are waiting and AGV SoC is below opportunity threshold AGV will charge during idle time for Scenario 1
+                #Scenario 2 uses opportunity charging in addition to carbon-aware charging
+                
+                self.State.set("TO_CHARGER")
+                self.enter(self.MyChargingQueue)
+
+                self.charging_records.append({"CurrentTime": self.env.now(), 
+                                              "AGVID": self.AGV_ID, 
+                                              "AGVSoC": self.SoC,
+                                              "Action": "EnterQueue",
+                                              "StartTime": self.env.now(), 
+                                              "EnergyAdded": None, 
+                                              "CurrentGridLoad": self.counters["CurrentGridLoad"], 
+                                              "CurrentCO2": self.counters["TotalCO2"]})
+                
+                #Explicit activation of first available charging station (standby didnt work for some reason :/ )
+                for cs in self.ChargingStationsList:
+                    if cs.ispassive(): 
+                        cs.activate()
+                        break
+                
+                #passivate and wait to be activated by charging station after charging is done
+                self.passivate()
                 
             else:
                 #Change state to idle and check for new job assignment
@@ -263,7 +292,9 @@ class ChargingStation(sim.Component):
               SoCThreshold=None,
               CarbonIntensity=None,
               counters=None,
-              charging_records=None):
+              charging_records=None,
+              Scenario=None,
+              CarbonThreshold=None):
         
         self.ChargeRate           =  ChargeRate
         self.MyChargingQueue      =  MyChargingQueue
@@ -276,6 +307,8 @@ class ChargingStation(sim.Component):
         self.CarbonIntensity      =  CarbonIntensity
         self.counters             =  counters
         self.charging_records     =  charging_records
+        self.Scenario             =  Scenario
+        self.CarbonThreshold      =  CarbonThreshold
         
     def process(self):
         while True:
@@ -283,16 +316,19 @@ class ChargingStation(sim.Component):
             #standby when no AGVs are waiting to charge (standby doesnt work so is activated by AGV when it enters charging queue)
             while len(self.MyChargingQueue) == 0:
                 self.standby()
-            
-            #Check if grid capacity allows for charging, if not wait and check again after interval    
-            if self.counters["CurrentGridLoad"] + self.ChargeRate <= self.SubstationCapacity:
+
+            #Find the carbon intensity for the current time step by using current simulation time (which is in seconds)
+            idx = floor(self.env.now() / 3600) % len(self.CarbonIntensity) #Loops around if sim runs longer than CarbonIntensity data length
+            gamma = self.CarbonIntensity['carbon_intensity'][idx] 
+                
+            #For Scenario 2 charging only if carbon intensity is lower that CarbonThreshold
+            carbon_check = (self.Scenario != 2 or gamma <= self.CarbonThreshold)
+
+            #Check if grid capacity and carbon intensity allows for charging, if not wait and check again after interval    
+            if self.counters["CurrentGridLoad"] + self.ChargeRate <= self.SubstationCapacity and carbon_check:
                 #Remove AGV from charging queue and change its state to charging
                 myAGV = self.MyChargingQueue.pop()
                 myAGV.State.set("CHARGING")
-                
-                #Find the carbon intensity for the current time step by using current simulation time (which is in seconds)
-                idx = floor(self.env.now() / 3600) % len(self.CarbonIntensity) #Loops around if sim runs longer than CarbonIntensity data length
-                gamma = self.CarbonIntensity['carbon_intensity'][idx] 
                 
                 #Calculate energy needed to fully charge
                 EnergyNeeded = (1.0 - myAGV.SoC) * self.BatteryCapacity

@@ -14,6 +14,7 @@ TravelDistanceQuayToYard = 500
 ChargerLocation = 0.5
 
 INPUT_PARAMETERS = dict(
+    Scenario                         = 1, #0 = reference charging, 1 = opportunity charging, 2 = carbon-aware opportunity charging
     AGVSpeed                         = 4.5,  # m/s
     
     ChargerLocation                  = 0.5,              # relative location of charger between yard and quay (0-1)
@@ -35,6 +36,8 @@ INPUT_PARAMETERS = dict(
 
     SoCThreshold                     = 0.7,     # dispatch threshold for charging request
     SubstationCapacity               = 400,     # grid ceiling (kW) - sensitivity parameter
+    OpportunityThreshold             = 0.9,     # SoC threshold for opportunity charging during idle periods for Scenario 1
+    CarbonThreshold                  = 400,     # max carbon intensity for carbon-aware opportunity charging (CO2/kWh)
 
     NrChargingStations               = 2,        # number of charging stations
     NrCranes                         = 2,        # number of quay cranes
@@ -71,6 +74,7 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     """
     
     #Initialize parameters from input dictionary
+    Scenario                         = input_parameters["Scenario"]
     AGVSpeed                         = input_parameters["AGVSpeed"]
     
     TravelDistanceQuayToYard         =  input_parameters["TravelDistanceQuayToYard"]
@@ -87,6 +91,8 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     BatteryCapacity                  =  input_parameters["BatteryCapacity"]
     ChargeRate                       =  input_parameters["ChargeRate"]
     SoCThreshold                     =  input_parameters["SoCThreshold"]
+    OpportunityThreshold             =  input_parameters["OpportunityThreshold"]
+    CarbonThreshold                  =  input_parameters["CarbonThreshold"]
     
     SubstationCapacity               =  input_parameters["SubstationCapacity"]
     
@@ -147,7 +153,9 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                             SoCThreshold=SoCThreshold,
                             CarbonIntensity=carbon_intensity,
                             counters=counters,
-                            charging_records=charging_records)
+                            charging_records=charging_records,
+                            Scenario=Scenario,
+                            CarbonThreshold=CarbonThreshold)
         
         ChargingStationsList.append(cs)
 
@@ -179,9 +187,11 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                 AGVList=AGVList,
                 MyJobQueueGlobal=MyJobQueueGlobal,
                 SoCThreshold=SoCThreshold,
+                OpportunityThreshold=OpportunityThreshold,
                 counters=counters,
                 delivery_records=delivery_records,
-                charging_records=charging_records)
+                charging_records=charging_records,
+                Scenario=Scenario)
         
         AGVList.append(agv)
         
@@ -226,9 +236,17 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     
     print(delivery_records)
     print(charging_records)
+
+    scenario_names = {
+    0: "Baseline charging",
+    1: "Opportunity charging",
+    2: "Carbon-aware charging"
+    }
+
     
     # ── Results ────────────────────────────────────────────────────────────────
     print("\n=== SIMULATION RESULTS ===")
+    print(f"Scenario            : {scenario_names.get(Scenario, Scenario)}")
     print(f"Fleet size          : {FleetSize} AGVs, {NrCranes} cranes, "
         f"{NrChargingStations} charging stations")
     print(f"Observation period  : {ObservationPeriod/3600:.0f} h ({ObservationPeriod/(24*3600):.0f} days)")
@@ -245,11 +263,12 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     return counters, delivery_records, charging_records
     
 counters, delivery_df, charging_df = run_simulation() #Run the simulation with default parameters   
- 
+
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import statsmodels.api as sm
+
 
 # Convert times from seconds to hours for readability
 delivery_df["ArrivalTime_h"]  = delivery_df["ArrivalTime"] / 3600
@@ -294,3 +313,12 @@ fig5.show()
 #     TEST_INPUT["FleetSize"] = i
 #     run_simulation(seed=i, input_parameters=TEST_INPUT)
 
+#Test run to check if scenario implementation run as expected
+"""
+for scenario in [0, 1, 2]:
+    TEST_INPUT = INPUT_PARAMETERS.copy()
+    TEST_INPUT["Scenario"] = scenario
+
+    print(f"\n\nRunning Scenario {scenario}")
+    run_simulation(input_parameters=TEST_INPUT)
+"""
