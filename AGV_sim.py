@@ -37,7 +37,8 @@ INPUT_PARAMETERS = dict(
     SoCThreshold                     = 0.7,     # dispatch threshold for charging request
     SubstationCapacity               = 400,     # grid ceiling (kW) - sensitivity parameter
     OpportunityThreshold             = 0.9,     # SoC threshold for opportunity charging during idle periods for Scenario 1
-    CarbonThreshold                  = 400,     # max carbon intensity for carbon-aware opportunity charging (CO2/kWh)
+    CarbonThreshold                  = 450,     # max carbon intensity for carbon-aware opportunity charging (CO2/kWh)
+    CriticalSoCThreshold             = 0.65,     # emergency charging threshold for Scenario 2
 
     NrChargingStations               = 2,        # number of charging stations
     NrCranes                         = 2,        # number of quay cranes
@@ -93,6 +94,7 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     SoCThreshold                     =  input_parameters["SoCThreshold"]
     OpportunityThreshold             =  input_parameters["OpportunityThreshold"]
     CarbonThreshold                  =  input_parameters["CarbonThreshold"]
+    CriticalSoCThreshold             =  input_parameters["CriticalSoCThreshold"]
     
     SubstationCapacity               =  input_parameters["SubstationCapacity"]
     
@@ -155,7 +157,8 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                             counters=counters,
                             charging_records=charging_records,
                             Scenario=Scenario,
-                            CarbonThreshold=CarbonThreshold)
+                            CarbonThreshold=CarbonThreshold,
+                            CriticalSoCThreshold=CriticalSoCThreshold)
         
         ChargingStationsList.append(cs)
 
@@ -261,7 +264,7 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
         print(f"Diesel baseline     : ~16–19 kgCO2/TEU")
     
     return counters, delivery_records, charging_records
-    
+"""    
 counters, delivery_df, charging_df = run_simulation() #Run the simulation with default parameters   
 
 import plotly.express as px
@@ -300,7 +303,7 @@ fig5 = px.scatter(charging_df[charging_df["Action"]=="StartCharging"],
                   x="CurrentTime", y="AGVID", color="AGVSoC",
                   title="Charging Events by AGV")
 fig5.show()
-
+"""
 # for i in range(3):
 #     # Use for loop to adjust parameters such as seed or 
 #     # input parameters for sensitivity analysis and design of experiments.

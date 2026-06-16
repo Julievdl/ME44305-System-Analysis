@@ -294,7 +294,8 @@ class ChargingStation(sim.Component):
               counters=None,
               charging_records=None,
               Scenario=None,
-              CarbonThreshold=None):
+              CarbonThreshold=None,
+              CriticalSoCThreshold=None):
         
         self.ChargeRate           =  ChargeRate
         self.MyChargingQueue      =  MyChargingQueue
@@ -309,6 +310,7 @@ class ChargingStation(sim.Component):
         self.charging_records     =  charging_records
         self.Scenario             =  Scenario
         self.CarbonThreshold      =  CarbonThreshold
+        self.CriticalSoCThreshold = CriticalSoCThreshold
         
     def process(self):
         while True:
@@ -320,9 +322,12 @@ class ChargingStation(sim.Component):
             #Find the carbon intensity for the current time step by using current simulation time (which is in seconds)
             idx = floor(self.env.now() / 3600) % len(self.CarbonIntensity) #Loops around if sim runs longer than CarbonIntensity data length
             gamma = self.CarbonIntensity['carbon_intensity'][idx] 
-                
-            #For Scenario 2 charging only if carbon intensity is lower that CarbonThreshold
-            carbon_check = (self.Scenario != 2 or gamma <= self.CarbonThreshold)
+
+            #What AGV is first in line for charging
+            myAGV_candidate = self.MyChargingQueue[0] 
+
+            #For Scenario 2 charging only if carbon intensity is lower that CarbonThreshold or SoC is at critical level
+            carbon_check = (self.Scenario != 2 or gamma <= self.CarbonThreshold or myAGV_candidate.SoC <= self.CriticalSoCThreshold)
 
             #Check if grid capacity and carbon intensity allows for charging, if not wait and check again after interval    
             if self.counters["CurrentGridLoad"] + self.ChargeRate <= self.SubstationCapacity and carbon_check:
