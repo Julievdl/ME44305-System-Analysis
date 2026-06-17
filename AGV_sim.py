@@ -211,10 +211,13 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     
     # ResetKPICounters 
     for key in counters:
-        counters[key] = 0
+        if key != "CurrentGridLoad":
+            counters[key] = 0
         
     delivery_records.clear()
     charging_records.clear()
+    
+    env.reset_now()
 
     # Wait ObservationPeriod -- not implemented yet
     env.run(till= ObservationPeriod)
