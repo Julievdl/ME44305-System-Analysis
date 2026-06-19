@@ -4,10 +4,12 @@ import random
 import numpy as np
 import pandas as pd
 import datetime as dt
+import plotly.express as px
+import plotly.graph_objects as go
 
 #Import the main classes from the simulation_classes.py file
 #To keep this file more organized
-from simulation_classes import AGV, Crane, ChargingStation, VesselGenerator
+from simulation_classes2 import AGV, Crane, ChargingStation, VesselGenerator
 from queue_plotting import plot_queue, plot_queue_lines
 
 #Standard/example dict of inputs. Can be modified in a loop for sensitivity analysis and experimentation with different scenarios.
@@ -15,7 +17,6 @@ TravelDistanceQuayToYard = 500
 ChargerLocation = 0.5
 
 INPUT_PARAMETERS = dict(
-    Scenario                         = 1, #0 = reference charging, 1 = opportunity charging, 2 = carbon-aware opportunity charging
     AGVSpeed                         = 4.5,  # m/s
     
     ChargerLocation                  = 0.5,              # relative location of charger between yard and quay (0-1)
@@ -36,15 +37,12 @@ INPUT_PARAMETERS = dict(
     ChargeRate                       = 300,      # charge rate (kW)
 
     SoCThreshold                     = 0.7,     # dispatch threshold for charging request
-    SubstationCapacity               = 400,     # grid ceiling (kW) - sensitivity parameter
-    OpportunityThreshold             = 0.9,     # SoC threshold for opportunity charging during idle periods for Scenario 1
-    CarbonThreshold                  = 450,     # max carbon intensity for carbon-aware opportunity charging (CO2/kWh)
-    CriticalSoCThreshold             = 0.65,     # emergency charging threshold for Scenario 2
+    SubstationCapacity               = 600,     # grid ceiling (kW) - sensitivity parameter
 
     NrChargingStations               = 2,        # number of charging stations
     NrCranes                         = 2,        # number of quay cranes
     
-    FleetSize                        = 6,                # number of AGVs in fleet
+    FleetSize                        = 4,                # number of AGVs in fleet
     WarmUpPeriod                     = 24 * 3600,        # seconds
     ObservationPeriod                = 28 * 24 *3600,    # seconds
     
@@ -61,12 +59,13 @@ INPUT_PARAMETERS = dict(
 
 #Load carbon intensity data
 CARBON_INTENSITY = pd.read_csv("carbon_intensity_seasonal.csv", parse_dates=['hour'])
-  
+print(CARBON_INTENSITY["carbon_intensity"].loc[0:23])
+print(CARBON_INTENSITY["carbon_intensity"].loc[0:23].describe())
 #Main simulation run function. Use in a loop for sensitivity and design of experiments.
 def run_simulation(input_parameters=INPUT_PARAMETERS, 
                    carbon_intensity=CARBON_INTENSITY,
                    seed=42,
-                   plot_queues=False): 
+                   plot_queues=True): 
 
     """
     Main simulation function. Initializes environment, creates components, and runs the simulation.
@@ -77,7 +76,6 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     """
     
     #Initialize parameters from input dictionary
-    Scenario                         = input_parameters["Scenario"]
     AGVSpeed                         = input_parameters["AGVSpeed"]
     
     TravelDistanceQuayToYard         =  input_parameters["TravelDistanceQuayToYard"]
@@ -94,9 +92,6 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
     BatteryCapacity                  =  input_parameters["BatteryCapacity"]
     ChargeRate                       =  input_parameters["ChargeRate"]
     SoCThreshold                     =  input_parameters["SoCThreshold"]
-    OpportunityThreshold             =  input_parameters["OpportunityThreshold"]
-    CarbonThreshold                  =  input_parameters["CarbonThreshold"]
-    CriticalSoCThreshold             =  input_parameters["CriticalSoCThreshold"]
     
     SubstationCapacity               =  input_parameters["SubstationCapacity"]
     
@@ -124,11 +119,14 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
         "CompletedContainers": 0,
         "CompletedVessels": 0,
         "CurrentGridLoad": 0,
-        "ArrivedVessels": 0
+        "ArrivedVessels": 0,
+        "VesselArrivalTime" : [],
+        "VesselDepartureTime" : []
     }
     
     #Initialize list for container delivery details (for potential later analysis and visualization)
     delivery_records = []
+    
     #Initialize list for charging details (for potential later analysis and visualization), Action refers to "EnterQueue", "StartCharging", "EndCharging"
     charging_records = []
     
@@ -157,10 +155,7 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                             SoCThreshold=SoCThreshold,
                             CarbonIntensity=carbon_intensity,
                             counters=counters,
-                            charging_records=charging_records,
-                            Scenario=Scenario,
-                            CarbonThreshold=CarbonThreshold,
-                            CriticalSoCThreshold=CriticalSoCThreshold)
+                            charging_records=charging_records)
         
         ChargingStationsList.append(cs)
 
@@ -192,11 +187,9 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                 AGVList=AGVList,
                 MyJobQueueGlobal=MyJobQueueGlobal,
                 SoCThreshold=SoCThreshold,
-                OpportunityThreshold=OpportunityThreshold,
                 counters=counters,
                 delivery_records=delivery_records,
-                charging_records=charging_records,
-                Scenario=Scenario)
+                charging_records=charging_records)
         
         AGVList.append(agv)
         
@@ -207,52 +200,53 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                     counters=counters)
 
 
-
     # Wait WarmUpPeriod 
     env.run(till= WarmUpPeriod)
     
+    #Get queue data
+    times  = list(MyJobQueueGlobal.length.tx()[0])
+    values = list(MyJobQueueGlobal.length.tx()[1])
+    chargetimes = list(MyChargingQueue.length.tx()[0])
+    chargevalues = list(MyChargingQueue.length.tx()[1])
+    vesseltimes = list(MyVesselQueue.length.tx()[0]) 
+    vesselvalues = list(MyVesselQueue.length.tx()[1])
+
+    #Plot queue data separately
+    plot_queue("MyJobQueueGlobal", times, values)
+    plot_queue("MyChargingQueue", chargetimes, chargevalues)
+    plot_queue("MyVesselQueue", vesseltimes, vesselvalues)
+    
+    #Plot combined queue data plot
+    arrival_times   = counters["VesselArrivalTime"]    # list of arrival timestamps
+    departure_times = counters["VesselDepartureTime"]  # list of departure timestamps
+    charge = pd.DataFrame(charging_records)
+    chargeStart = list(charge[charge["Action"]=="StartCharging"]["CurrentTime"])
+    
+    plot_queue_lines(["MyJobQueueGlobal","MyChargingQueue","MyVesselQueue"],
+                     [times,chargetimes,vesseltimes], 
+                     [values,chargevalues,vesselvalues],
+                     [arrival_times,departure_times],
+                     ["Vessel arrival times", "Vessel departure times"])
+    
+    ready = input("Warm-up period complete. Press Enter to continue to observation period...")
+    
+    
     # ResetKPICounters 
     for key in counters:
-        if key != "CurrentGridLoad":
+        if key == "VesselArrivalTime" or key == "VesselDepartureTime":
+            counters[key] = []
+        
+        elif key != "CurrentGridLoad":
             counters[key] = 0
         
     delivery_records.clear()
     charging_records.clear()
     
     env.reset_now()
-
-    # Wait ObservationPeriod -- not implemented yet
+    
+    # Wait ObservationPeriod
     env.run(till= ObservationPeriod)
 
-    # Convert records to DataFrames for easier analysis and visualization
-    delivery_records = pd.DataFrame(delivery_records)
-    charging_records = pd.DataFrame(charging_records)
-    
-    #Print statistics and KPIs
-    MyJobQueueGlobal.print_statistics()
-    MyVesselQueue.print_statistics()
-    MyChargingQueue.print_statistics()
-    
-    
-    print(counters)
-    print("Total CO2 emissions: ", counters["TotalCO2"]) 
-    print("Completed containers: ", counters["CompletedContainers"])
-    print("Completed unloading of vessels: ", counters["CompletedVessels"])
-    print("CarbonIntensity: ", carbon_intensity['carbon_intensity'])
-    print("ArrivedVessels", counters['ArrivedVessels'])
-    print(dt.datetime.now())
-    
-    print(delivery_records)
-    print(charging_records)
-
-    scenario_names = {
-    0: "Baseline charging",
-    1: "Opportunity charging",
-    2: "Carbon-aware charging"
-    }
-
-    
-    # ── Results ────────────────────────────────────────────────────────────────
     if plot_queues:
         #Get queue data
         times  = list(MyJobQueueGlobal.length.tx()[0])
@@ -279,8 +273,28 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
                         [arrival_times,departure_times],
                         ["Vessel arrival times", "Vessel departure times"])
     
+    # Convert records to DataFrames for easier analysis and visualization
+    delivery_records = pd.DataFrame(delivery_records)
+    charging_records = pd.DataFrame(charging_records)
+    
+    #Print statistics and KPIs
+    MyJobQueueGlobal.print_statistics()
+    MyVesselQueue.print_statistics()
+    MyChargingQueue.print_statistics()
+    
+    print(counters)
+    print("Total CO2 emissions: ", counters["TotalCO2"]) 
+    print("Completed containers: ", counters["CompletedContainers"])
+    print("Completed unloading of vessels: ", counters["CompletedVessels"])
+    print("CarbonIntensity: ", carbon_intensity['carbon_intensity'])
+    print("ArrivedVessels", counters['ArrivedVessels'])
+    print(dt.datetime.now())
+    
+    print(delivery_records)
+    print(charging_records)
+    
+    # ── Results ────────────────────────────────────────────────────────────────
     print("\n=== SIMULATION RESULTS ===")
-    print(f"Scenario            : {scenario_names.get(Scenario, Scenario)}")
     print(f"Fleet size          : {FleetSize} AGVs, {NrCranes} cranes, "
         f"{NrChargingStations} charging stations")
     print(f"Observation period  : {ObservationPeriod/3600:.0f} h ({ObservationPeriod/(24*3600):.0f} days)")
@@ -295,14 +309,13 @@ def run_simulation(input_parameters=INPUT_PARAMETERS,
         print(f"Diesel baseline     : ~16–19 kgCO2/TEU")
     
     return counters, delivery_records, charging_records
-"""    
+    
 counters, delivery_df, charging_df = run_simulation() #Run the simulation with default parameters   
-
+ 
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import statsmodels.api as sm
-
 
 # Convert times from seconds to hours for readability
 delivery_df["ArrivalTime_h"]  = delivery_df["ArrivalTime"] / 3600
@@ -334,7 +347,7 @@ fig5 = px.scatter(charging_df[charging_df["Action"]=="StartCharging"],
                   x="CurrentTime", y="AGVID", color="AGVSoC",
                   title="Charging Events by AGV")
 fig5.show()
-"""
+
 # for i in range(3):
 #     # Use for loop to adjust parameters such as seed or 
 #     # input parameters for sensitivity analysis and design of experiments.
@@ -347,13 +360,3 @@ fig5.show()
 #     TEST_INPUT["FleetSize"] = i
 #     run_simulation(seed=i, input_parameters=TEST_INPUT)
 
-#Test run to check if scenario implementation run as expected
-"""
-for scenario in [0, 1, 2]:
-    TEST_INPUT = INPUT_PARAMETERS.copy()
-    TEST_INPUT["Scenario"] = scenario
-
-    print(f"\n\nRunning Scenario {scenario}")
-    run_simulation(input_parameters=TEST_INPUT)
-"""
-run_simulation(plot_queues=True)
